@@ -2,7 +2,7 @@
 """
 Plot language distribution from a CSV containing a 'language' column.
 
-Default input file: tracks_added_languages.csv
+Default input file: tracks_added_languages_(Old-Spanish-Problem).csv
 
 Usage examples:
   - Show distribution (counts) for all languages:
@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 
-DEFAULT_CSV = 'tracks_added_languages_v2.csv'
+DEFAULT_CSV = 'tracks_added_languages.csv'
 DEFAULT_COLUMN = 'language'
 
 
