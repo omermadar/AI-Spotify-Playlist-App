@@ -1,4 +1,5 @@
 musicvenv/
 tracks.csv
+tracks_added_languages.csv
 .idea/
 .DS_Store
