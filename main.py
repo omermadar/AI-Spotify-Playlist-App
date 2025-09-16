@@ -13,7 +13,7 @@ def main():
     # 1. Load and Clean Data
     print("Loading and cleaning dataset...")
     cleaner = DataCleaner()
-    df = pd.read_csv('tracks.csv')  # Load raw music data
+    df = pd.read_csv('tracks_added_languages.csv')  # Load raw music data
     X, songs = cleaner.clean_data(df)  # Remove missing values, extract features
 
     # 2. Scale Features
