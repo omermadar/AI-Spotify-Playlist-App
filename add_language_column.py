@@ -202,7 +202,7 @@ def detect_language(songs_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def save_songs_with_language(songs_df: pd.DataFrame, filename: str = 'tracks_added_languages_v2.csv') -> None:
+def save_songs_with_language(songs_df: pd.DataFrame, filename: str = 'tracks_added_languages.csv') -> None:
     """Saves the songs DataFrame with the added language columns to a CSV file."""
     print(f"\nSaving songs with languages to {filename}...")
     songs_df.to_csv(filename, index=False)
