@@ -9,10 +9,18 @@ class DataCleaner:
         self.features = config.FEATURES
 
     def clean_data(self, df):
-        """Remove songs with missing names and extract features"""
+        """Remove songs with missing names and extract features.
+        Also preserve optional metadata columns if present: 'language', 'language_confidence'.
+        """
         df.dropna(subset=['name'], inplace=True)  # Remove songs without names
         X = df[self.features].copy()  # Get audio feature columns
-        songs = df[['name', 'artists']].copy()  # Get song info
+        # Base columns
+        song_cols = ['name', 'artists']
+        # Optional columns if present in the CSV
+        for col in ['language', 'language_confidence']:
+            if col in df.columns:
+                song_cols.append(col)
+        songs = df[song_cols].copy()  # Get song info (with optional language metadata)
         print("Data cleaned successfully.")
         return X, songs
 
