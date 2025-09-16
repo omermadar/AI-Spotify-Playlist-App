@@ -21,10 +21,10 @@ def main():
     X_scaled = cleaner.scale_features(X)  # Normalize feature values 0-1
 
     # 3. Create Visualizations
-    print("Creating visualizations...")
-    visualizer = DataVisualizer()
-    visualizer.plot_feature_distributions(X_scaled)  # Show feature histograms
-    visualizer.plot_correlation_matrix(X_scaled)  # Show feature relationships
+    # print("Creating visualizations...")
+    # visualizer = DataVisualizer()
+    # visualizer.plot_feature_distributions(X_scaled)  # Show feature histograms
+    # visualizer.plot_correlation_matrix(X_scaled)  # Show feature relationships
 
     # 4. Build and Run Recommender
     print("Initializing recommender system...")
