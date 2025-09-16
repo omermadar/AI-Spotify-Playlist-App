@@ -3,7 +3,7 @@ from sklearn.cluster import MiniBatchKMeans
 from sklearn.metrics.pairwise import cosine_similarity
 
 class MusicRecommender:
-    def __init__(self, features_data, songs_data, n_clusters: int = 150, batch_size: int = 4096, random_state: int = 42):
+    def __init__(self, features_data, songs_data, n_clusters: int = 75, batch_size: int = 4096, random_state: int = 42):
         """
         Initialize recommender with clustering, then use cosine similarity within clusters.
 
