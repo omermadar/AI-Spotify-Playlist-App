@@ -99,17 +99,10 @@ class PlaylistCreator:
             print(f"  Getting recommendations for seed {i + 1}: {seed_song_name}")
             try:
                 # Use the enhanced language-aware recommendation method
-                if hasattr(self.music_recommender, 'get_recommendations_with_language_filter'):
-                    recommendations_df = self.music_recommender.get_recommendations_with_language_filter(
-                        song_title=seed_song_name,
-                        n_recommendations=25,  # Get fewer per seed but higher quality
-                        preferred_language=preferred_language
-                    )
-                else:
-                    # Fallback to regular method
+                if hasattr(self.music_recommender, 'get_recommendations'):
                     recommendations_df = self.music_recommender.get_recommendations(
                         song_title=seed_song_name,
-                        n_recommendations=25
+                        n_recommendations=25,  # Get fewer per seed but higher quality
                     )
 
                 if not recommendations_df.empty:

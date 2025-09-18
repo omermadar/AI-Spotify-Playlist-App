@@ -141,66 +141,6 @@ class MusicRecommender:
             print(f"Error in get_recommendations for '{song_title}': {e}")
             return pd.DataFrame()
 
-    def get_recommendations_with_language_filter(self, song_title: str, n_recommendations: int = 10,
-                                                 preferred_language: str = 'en'):
-        """
-        Enhanced recommendation method with explicit language filtering.
-        This ensures we get songs primarily in the preferred language.
-        """
-        try:
-            # Find the song in the dataset
-            song_matches = self.songs[self.songs['name'].str.contains(song_title, case=False, na=False, regex=False)]
-
-            if song_matches.empty:
-                print(f"Song '{song_title}' not found.")
-                return pd.DataFrame()
-
-            # Use the first match and cast to int
-            query_idx = int(song_matches.index[0])
-            query_cluster = self.cluster_labels[query_idx]
-
-            # Get query song info
-            query_song = self.songs.iloc[query_idx]
-            query_features = self.features.iloc[query_idx].values.reshape(1, -1)
-
-            # Get all songs in the same cluster
-            cluster_indices = np.where(self.cluster_labels == query_cluster)[0]
-
-            # LANGUAGE PRE-FILTER: First filter by language preference
-            language_filtered_indices = []
-            for idx in cluster_indices:
-                if idx == query_idx:
-                    continue
-                song = self.songs.iloc[idx]
-                song_language = song.get('language', 'unknown')
-
-                # Prefer songs in the target language
-                if song_language == preferred_language or song_language == 'unknown':
-                    language_filtered_indices.append(idx)
-
-            if not language_filtered_indices:
-                print(f"No songs found in language '{preferred_language}' in the same cluster")
-                # Fallback to original method without language filter
-                return self.get_recommendations(song_title, n_recommendations)
-
-            # Calculate similarities only for language-filtered songs
-            filtered_features = self.features.iloc[language_filtered_indices].values
-            similarities = cosine_similarity(query_features, filtered_features).flatten()
-
-            # Sort by similarity and take top N
-            top_indices_in_filtered = similarities.argsort()[-n_recommendations:][::-1]
-            final_indices = [language_filtered_indices[i] for i in top_indices_in_filtered]
-
-            # Get the recommended songs
-            recommended_songs = self.songs.iloc[final_indices].copy().reset_index(drop=True)
-            recommended_songs['similarity_score'] = similarities[top_indices_in_filtered]
-            recommended_songs['audio_similarity'] = similarities[top_indices_in_filtered]
-
-            return recommended_songs.reset_index(drop=True)
-
-        except Exception as e:
-            print(f"Error in get_recommendations_with_language_filter for '{song_title}': {e}")
-            return pd.DataFrame()
 
     def find_similar_to_features(self, target_features: dict, n_recommendations: int = 200):
         """
