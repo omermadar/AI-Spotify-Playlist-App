@@ -54,8 +54,8 @@ brew install ollama
 # Start Ollama service
 ollama serve
 
-# In a new terminal, install required model
-ollama pull llama2
+# In a new terminal, install any model you want
+ollama pull llama2 #example
 # OR if you prefer a smaller model:
 ollama pull phi
 
@@ -184,13 +184,6 @@ pip install -r requirements.txt
 └── 📄 .spotify_cache                   # (auto-created after first auth)
 ```
 
-**⚠️ IMPORTANT: Delete these files if present (they cause conflicts):**
-- `spotify_integration.py` (broken version)
-- `interactive_playlist_app.py` (old versions)  
-- `complete_working_app.py`
-- `fixed_interactive_app.py`
-
----
 
 ### 6. Verify Installation
 
@@ -441,7 +434,7 @@ User Input → Ollama LLM → AI Recommender → Spotify Integration
 ### AI Pipeline Details:
 1. **Natural Language Processing**: Ollama interprets user requests
 2. **Seed Song Generation**: LLM suggests starting songs for recommendations  
-3. **Cosine Similarity Matching**: Your trained model finds similar tracks
+3. **Cosine Similarity Matching**: Your trained model finds similar tracks (on the song's cluster for performance)
 4. **Smart Filtering**: Language, genre, and quality filtering
 5. **Deduplication**: Advanced duplicate removal
 6. **Spotify Integration**: Automatic real playlist creation
