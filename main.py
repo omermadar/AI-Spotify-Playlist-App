@@ -1,7 +1,7 @@
 import pandas as pd
 from DataCleaning import DataCleaner
-from DataVisualizer import DataVisualizer
 from MusicRecommender import MusicRecommender
+from PlaylistCreator import PlaylistCreator
 
 
 def main():
@@ -20,90 +20,33 @@ def main():
     print("Scaling features...")
     X_scaled = cleaner.scale_features(X)  # Normalize feature values 0-1
 
-    # 3. Create Visualizations
-    # print("Creating visualizations...")
-    # visualizer = DataVisualizer()
-    # visualizer.plot_feature_distributions(X_scaled)  # Show feature histograms
-    # visualizer.plot_correlation_matrix(X_scaled)  # Show feature relationships
-
-    # 4. Build and Run Recommender
+    # 3. Build and Run Recommender
     print("Initializing recommender system...")
-    # Initialize recommender with MiniBatchKMeans, also has default parameters
-    recommender = MusicRecommender(features_data=X_scaled, songs_data=songs, language_weight= 0.2, artist_weight=0.1)
+    recommender = MusicRecommender(features_data=X_scaled, songs_data=songs, language_weight=0.2, artist_weight=0.1)
 
-    # Save songs with cluster assignments
+    # Save songs with cluster assignments for persistence
     songs_with_clusters = songs.copy()
     songs_with_clusters['cluster_id'] = recommender.cluster_labels
     songs_with_clusters.to_csv('data/songs_with_clusters.csv', index=False)
     print("Saved songs with cluster assignments to data/songs_with_clusters.csv")
 
+    # 4. Smart Playlist Creation Test - NEW APPROACH
+    print("\n--- Smart Playlist Creation Test (Ollama Text-to-Features) ---")
 
-    # 5. Interactive search and recommendations
-    try:
-        search_keyword = input("\nEnter a text prompt (word in title or artist) to search for songs: ").strip()
-    except EOFError:
-        search_keyword = ""
+    # Initialize playlist creator
+    playlist_creator = PlaylistCreator(music_recommender=recommender)
 
-    if not search_keyword:
-        print("No input given. Using default keyword 'love'.")
-        search_keyword = 'love'
+    # Test the NEW approach: Text → Audio Features → Similarity Search
+    user_request = "modern pop-rap songs for workout, i like drake, dave and more"
 
-    print(f"\nSearching for songs with '{search_keyword}' in the title or artist...")
-    search_results = recommender.search_songs(search_keyword, limit=10)
+    # Use the new method
+    playlist_data = playlist_creator.create_playlist_from_description(user_request, final_playlist_size=50)
 
-    if search_results.empty:
-        print(f"\nNo songs found with '{search_keyword}'. Exiting.")
-        return
-
-    print("\nFound these songs (choose one by number):")
-    search_results = search_results.reset_index(drop=True)
-    for display_i, row in enumerate(search_results.itertuples(index=False), start=1):
-        print(f"  [{display_i}] {row.name} — {row.artists}")
-
-    # Ask user to choose a song by index with validation (1..N)
-    n = len(search_results)
-    while True:
-        choice = input("Enter the number of the song you want recommendations for (or 'q' to quit): ").strip().lower()
-        if choice in ("q", "quit", "exit"):
-            print("Exiting without generating recommendations.")
-            return
-        if choice.isdigit():
-            sel = int(choice)
-            if 1 <= sel <= n:
-                chosen_title = search_results.iloc[sel - 1]['name']
-                break
-        print(f"Invalid selection. Please enter a number between 1 and {n}, or 'q' to quit.")
-
-    print(f"\nGetting recommendations for '{chosen_title}'...")
-    recommendations = recommender.get_recommendations(chosen_title, n_recommendations=10)
-
-    # Handle non-DataFrame responses
-    if isinstance(recommendations, str):
-        print(recommendations)
-        return
-
-    if recommendations is None or getattr(recommendations, 'empty', False):
-        print("No recommendations available.")
-        return
-
-    # Choose score column: prefer blended total_similarity, else audio_similarity
-    score_col = 'total_similarity' if 'total_similarity' in recommendations.columns else (
-        'audio_similarity' if 'audio_similarity' in recommendations.columns else None
-    )
-
-    print("\nTop 10 recommended songs:")
-    for i, row in enumerate(recommendations.itertuples(index=False), start=1):
-        name = getattr(row, 'name', 'Unknown')
-        artists = getattr(row, 'artists', 'Unknown')
-        if score_col:
-            score_val = getattr(row, score_col, None)
-            try:
-                score_txt = f"{float(score_val):.3f}"
-            except Exception:
-                score_txt = "N/A"
-        else:
-            score_txt = "N/A"
-        print(f"  [{i}] {name} — {artists}  (similarity: {score_txt})")
+    print(f"\nPlaylist '{playlist_data['name']}' created!")
+    print(f"Total tracks: {playlist_data['track_count']}")
+    print("\nFirst 10 songs:")
+    for i, song in enumerate(playlist_data['songs'][:50]):
+        print(f"  {i + 1}. {song['name']} by {song['artist']} (score: {song['score']:.3f})")
 
 
 if __name__ == "__main__":
