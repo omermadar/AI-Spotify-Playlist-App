@@ -133,3 +133,189 @@ class MusicRecommender:
             self.songs['artists'].str.lower().str.contains(keyword_lower, na=False)
         ]
         return search_results.head(limit).reset_index(drop=True)
+
+    def export_cluster_language_artist_distribution(
+        self,
+        csv_path: str = 'cluster_language_artist_distribution.csv',
+        plot: bool = True,
+        max_languages: int = 10,
+        top_artists_overall: int = 10,
+        artist_min_count: int = 5,
+        unknown_label: str = 'unknown',
+        plot_lang_path: str = 'K-Decision-Pictures/Cluster-Language-Distribution.png',
+        plot_artist_path: str = 'K-Decision-Pictures/Cluster-Artist-Heatmap.png',
+    ):
+        """
+        Build a CSV summarizing, for each cluster, the distribution of languages and
+        the frequency of artists, and optionally create plots.
+
+        Output CSV columns (tidy format):
+          - cluster_id: int
+          - type: 'language' or 'artist'
+          - label: language name or artist name (lowercased, stripped)
+          - count: occurrences in the cluster
+          - percent: count / cluster_size
+          - cluster_size: total rows in the cluster
+          - global_count: (artist rows only) total occurrences of the artist across the whole dataset
+
+        Parameters
+        - csv_path: where to save the tidy CSV report
+        - plot: whether to generate plots
+        - max_languages: how many top languages (overall) to include in the stacked bar plot
+        - top_artists_overall: number of top artists overall to include in the heatmap
+        - artist_min_count: minimum total count across all clusters to consider an artist in the heatmap
+        - unknown_label: normalization label for missing/unknown language
+        - plot_lang_path: path to save the language stacked-bar plot
+        - plot_artist_path: path to save the artist heatmap plot
+        """
+        import numpy as np
+        import pandas as pd
+        import os
+        import matplotlib as mpl
+        # Force a non-interactive backend to ensure PNGs render in headless environments
+        try:
+            mpl.use('Agg')
+        except Exception:
+            pass
+
+        df = self.songs.copy()
+        df = df.reset_index(drop=True)
+        df['cluster_id'] = pd.Series(self.cluster_labels, index=df.index).astype(int)
+
+        # Normalize language column
+        if 'language' in df.columns:
+            langs = df['language'].astype(str).str.strip().str.lower()
+            # Replace empty or nan-like with unknown
+            langs = langs.replace({'': unknown_label})
+            langs = langs.fillna(unknown_label)
+        else:
+            langs = pd.Series([unknown_label] * len(df))
+        df['language_norm'] = langs
+
+        # Prepare cluster sizes
+        cluster_sizes = df.groupby('cluster_id').size().rename('cluster_size')
+
+        # Language distribution per cluster (counts and percents)
+        lang_counts = (
+            df.groupby(['cluster_id', 'language_norm']).size().rename('count').reset_index()
+        )
+        lang_counts = lang_counts.merge(cluster_sizes.reset_index(), on='cluster_id', how='left')
+        lang_counts['percent'] = lang_counts['count'] / lang_counts['cluster_size']
+        lang_counts['type'] = 'language'
+        lang_counts.rename(columns={'language_norm': 'label'}, inplace=True)
+
+        # Artist frequencies: split comma-separated artists and explode
+        if 'artists' in df.columns:
+            # split -> list of lowercased, stripped names; drop empty
+            artists_series = (
+                df['artists']
+                .fillna('')
+                .astype(str)
+                .apply(lambda s: [a.strip().lower() for a in s.split(',') if a.strip()])
+            )
+            df_art = df[['cluster_id']].copy()
+            df_art['artist'] = artists_series
+            df_art = df_art.explode('artist')
+            df_art = df_art[df_art['artist'].notna() & (df_art['artist'] != '')]
+            # Per-cluster counts
+            artist_counts = (
+                df_art.groupby(['cluster_id', 'artist']).size().rename('count').reset_index()
+            )
+            artist_counts = artist_counts.merge(cluster_sizes.reset_index(), on='cluster_id', how='left')
+            artist_counts['percent'] = artist_counts['count'] / artist_counts['cluster_size']
+            artist_counts['type'] = 'artist'
+            artist_counts.rename(columns={'artist': 'label'}, inplace=True)
+            # Global (dataset-wide) artist counts
+            total_artist_counts = df_art.groupby('artist').size().rename('global_count').reset_index()
+            total_artist_counts.rename(columns={'artist': 'label'}, inplace=True)
+            artist_counts = artist_counts.merge(total_artist_counts, on='label', how='left')
+        else:
+            artist_counts = pd.DataFrame(columns=['cluster_id', 'label', 'count', 'cluster_size', 'percent', 'type', 'global_count'])
+
+        # Combine and save tidy CSV
+        tidy = pd.concat([lang_counts, artist_counts], ignore_index=True)
+        # Ensure global_count exists for all rows (NaN for non-artist rows)
+        if 'global_count' not in tidy.columns:
+            tidy['global_count'] = np.nan
+        # Sort for readability
+        tidy.sort_values(['type', 'cluster_id', 'count'], ascending=[True, True, False], inplace=True)
+        tidy.to_csv(csv_path, index=False)
+        print(f"Saved cluster language/artist distribution CSV to: {csv_path}")
+
+        if not plot:
+            return tidy
+
+        # Plotting: import heavy libs lazily
+        try:
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+        except Exception as e:
+            print(f"Plotting libraries not available ({e}). Skipping plots.")
+            return tidy
+
+        # 1) Stacked bar of language percentages per cluster (top-N languages overall)
+        try:
+            total_lang_counts = lang_counts.groupby('label')['count'].sum().sort_values(ascending=False)
+            top_langs = list(total_lang_counts.head(max_languages).index)
+            # Group other languages into 'other'
+            lang_plot = lang_counts.copy()
+            lang_plot['label_plot'] = lang_plot['label'].where(lang_plot['label'].isin(top_langs), other='other')
+            # Re-aggregate after grouping others
+            lang_plot = (
+                lang_plot.groupby(['cluster_id', 'label_plot'])[['count']].sum().reset_index()
+                .merge(cluster_sizes.reset_index(), on='cluster_id', how='left')
+            )
+            lang_plot['percent'] = lang_plot['count'] / lang_plot['cluster_size']
+            pivot = lang_plot.pivot(index='cluster_id', columns='label_plot', values='percent').fillna(0.0)
+            # Order columns: top_langs then 'other' if exists
+            cols = [c for c in top_langs if c in pivot.columns]
+            if 'other' in pivot.columns:
+                cols.append('other')
+            pivot = pivot[cols]
+
+            plt.figure(figsize=(max(10, len(pivot) * 0.5), 6))
+            pivot.plot(kind='bar', stacked=True, colormap='tab20')
+            plt.title('Language distribution by cluster (percentage)')
+            plt.xlabel('Cluster ID')
+            plt.ylabel('Percentage within cluster')
+            plt.legend(title='Language', bbox_to_anchor=(1.05, 1), loc='upper left')
+            plt.tight_layout()
+            os.makedirs(os.path.dirname(plot_lang_path) or '.', exist_ok=True)
+            plt.savefig(plot_lang_path, dpi=150, bbox_inches='tight')
+            print(f"Saved language distribution plot to: {plot_lang_path}")
+            plt.close()
+        except Exception as e:
+            print(f"Failed to create language distribution plot: {e}")
+
+        # 2) Heatmap of artist counts across clusters (top-N artists overall with min-count filter)
+        try:
+            if not artist_counts.empty and top_artists_overall > 0:
+                total_artist_counts = artist_counts.groupby('label')['count'].sum()
+                eligible = total_artist_counts[total_artist_counts >= max(1, artist_min_count)]
+                top_artists = list(eligible.sort_values(ascending=False).head(top_artists_overall).index)
+                if top_artists:
+                    aplot = artist_counts[artist_counts['label'].isin(top_artists)].copy()
+                    # Rename columns with global counts for readability in the plot
+                    label_to_global = total_artist_counts.to_dict()
+                    aplot['label_pretty'] = aplot['label'].map(lambda s: f"{s} ({label_to_global.get(s, 0)})")
+                    heat = aplot.pivot(index='cluster_id', columns='label_pretty', values='count').fillna(0)
+                    # Sort clusters by size for readability
+                    heat = heat.loc[cluster_sizes.sort_values(ascending=False).index]
+                    plt.figure(figsize=(min(24, 2 + 0.5 * len(top_artists)), max(6, 0.35 * len(heat))))
+                    sns.heatmap(heat, cmap='YlOrRd', linewidths=0.2)
+                    plt.title('Top artists count by cluster (x-axis shows global totals)')
+                    plt.xlabel('Artist (global count)')
+                    plt.ylabel('Cluster ID')
+                    plt.tight_layout()
+                    os.makedirs(os.path.dirname(plot_artist_path) or '.', exist_ok=True)
+                    plt.savefig(plot_artist_path, dpi=150, bbox_inches='tight')
+                    print(f"Saved artist heatmap plot to: {plot_artist_path}")
+                    plt.close()
+                else:
+                    print("No artists met the min-count criteria; skipping artist heatmap.")
+            else:
+                print("Artist data not available or disabled; skipping artist heatmap.")
+        except Exception as e:
+            print(f"Failed to create artist heatmap plot: {e}")
+
+        return tidy

@@ -92,6 +92,12 @@ def compute_elbow_and_silhouette(X_fit, X_sil, algo: str, k_range: range, batch_
 
 
 def plot_elbow_with_silhouette(results: List[Tuple[int, float, float]], title: str, save_path: str | None):
+    # Ensure headless-safe backend
+    try:
+        plt.switch_backend('Agg')
+    except Exception:
+        pass
+
     ks = [k for k, _, _ in results]
     inertias = [i for _, i, _ in results]
     silhouettes = [s for _, _, s in results]
@@ -122,9 +128,13 @@ def plot_elbow_with_silhouette(results: List[Tuple[int, float, float]], title: s
 
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        plt.savefig(save_path)
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"Saved combined elbow+silhouette plot to: {save_path}")
-    plt.show()
+    # Do not force show in headless environments
+    try:
+        plt.show()
+    except Exception:
+        pass
 
 
 def main():
