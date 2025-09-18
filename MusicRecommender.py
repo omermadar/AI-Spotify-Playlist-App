@@ -2,6 +2,8 @@ import pandas as pd
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.metrics.pairwise import cosine_similarity
 
+import os, joblib # For saving/loading kmeans calculations
+
 class MusicRecommender:
     def __init__(self, features_data, songs_data, n_clusters: int = 18, batch_size: int = 4096, random_state: int = 42,
                  language_weight: float = 0.2, artist_weight: float = 0.1):
@@ -38,9 +40,26 @@ class MusicRecommender:
             self.language_weight /= total
             self.artist_weight /= total
 
-        # Fit MiniBatchKMeans for scalable clustering
-        self.kmeans = MiniBatchKMeans(n_clusters=n_clusters, batch_size=batch_size, random_state=random_state)
-        self.cluster_labels = self.kmeans.fit_predict(self.features)
+
+        # Check for existing saved model
+        model_path = f'models/kmeans_k{n_clusters}.joblib'
+        os.makedirs('models', exist_ok=True)
+
+        if os.path.exists(model_path):
+            print(f"Loading existing KMeans model from {model_path}")
+            self.kmeans = joblib.load(model_path)
+            self.cluster_labels = self.kmeans.predict(self.features)
+        else:
+            print(f"Training new KMeans model (k={n_clusters})...")
+            # Fit MiniBatchKMeans for scalable clustering
+            self.kmeans = MiniBatchKMeans(n_clusters=n_clusters, batch_size=batch_size, random_state=random_state)
+            self.cluster_labels = self.kmeans.fit_predict(self.features)
+
+            # Save the trained model
+            joblib.dump(self.kmeans, model_path)
+            print(f"Saved KMeans model to {model_path}")
+
+
 
         # Build mapping from cluster id to list of member indices
         self.cluster_to_indices = {}
@@ -48,6 +67,7 @@ class MusicRecommender:
             self.cluster_to_indices.setdefault(int(c), []).append(idx)
 
         print(f"Recommender initialized with MiniBatchKMeans (k={n_clusters}). Cosine similarity is computed within clusters.")
+
 
     def _compute_language_scores(self, query_idx: int, candidate_indices: list[int]):
         import numpy as np

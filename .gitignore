@@ -3,5 +3,7 @@ tracks.csv
 tracks_added_languages_(Old-Spanish-Problem).csv
 tracks_added_languages.csv
 K-Decision-Pictures/
+models/
+data/
 .idea/
 .DS_Store

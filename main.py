@@ -31,6 +31,13 @@ def main():
     # Initialize recommender with MiniBatchKMeans, also has default parameters
     recommender = MusicRecommender(features_data=X_scaled, songs_data=songs, language_weight= 0.2, artist_weight=0.1)
 
+    # Save songs with cluster assignments
+    songs_with_clusters = songs.copy()
+    songs_with_clusters['cluster_id'] = recommender.cluster_labels
+    songs_with_clusters.to_csv('data/songs_with_clusters.csv', index=False)
+    print("Saved songs with cluster assignments to data/songs_with_clusters.csv")
+
+
     # 5. Interactive search and recommendations
     try:
         search_keyword = input("\nEnter a text prompt (word in title or artist) to search for songs: ").strip()
