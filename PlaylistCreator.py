@@ -16,26 +16,36 @@ class PlaylistCreator:
         Returns list of song titles that we can search for.
         """
         prompt = f"""
-You are a music expert. Based on this playlist request: "{user_request}"
+        You are a hit-song seeding assistant for a recommender that uses cosine similarity and k-means over a large catalog of ~600k tracks.
+        
+        Task:
+        - Given a natural-language playlist request, return EXACTLY {n_seeds} distinct SONG TITLES (no artists) as a JSON array.
+        - Output must be the final, trimmed array only, no commentary.
+        - Prefer globally popular, mainstream originals that are widely available in large catalogs (avoid remixes, live/sped-up/cover versions).
+        - Prefer songs released 2000–2024 unless the request explicitly asks for earlier decades.
+        - Keep titles as they appear on Spotify (proper casing, punctuation), but do NOT include the artist name.
+        - Avoid duplicate titles or near-duplicates.
+        - If the request is ambiguous, pick one coherent, popular interpretation and stay consistent.
+        
+        Bias rules (apply when relevant):
+        - For energy/workout/gym/upbeat/party: pick high-energy hip-hop/pop bangers that are well-known and broadly popular.
+        - For sad/mellow/acoustic/chill/study: pick widely-known, slower, acoustic or mellow tracks.
+        - For decade/era/genre constraints: honor them first, then still prefer the biggest, most recognizable tracks in that slice.
+        
+        Examples (few-shot):
+        
+        Request: upbeat rap songs for workout
+        Return: ["Lose Yourself","Till I Collapse","SICKO MODE","HUMBLE.","POWER","In Da Club","Stronger","DNA.","All of the Lights","Started From The Bottom"]
+        
+        Request: sad acoustic songs
+        Return: ["Skinny Love","Hallelujah","The A Team","I Will Follow You into the Dark","Fast Car","Someone Like You","Heartbeats","The Scientist","Tears in Heaven","Photograph"]
+        
+        Now produce the seeds:
+        
+        Request: "{user_request}"
+        Return:
 
-Suggest {n_seeds} well-known songs that perfectly match this request. Focus on popular, recognizable songs that would be good starting points.
-
-For "upbeat rap songs for workout", suggest songs like:
-- Eminem - Lose Yourself
-- Drake - Started From The Bottom
-- Kanye West - Stronger
-- 50 Cent - In Da Club
-
-For "sad acoustic songs", suggest songs like:
-- Johnny Cash - Hurt
-- Mad World - Gary Jules
-- The Sound of Silence - Simon & Garfunkel
-
-Return ONLY a JSON array of song titles (just the song name, not artist):
-["Lose Yourself", "Started From The Bottom", "Stronger", "In Da Club", ...]
-
-No other text, just the JSON array.
-"""
+        """
 
         try:
             response = requests.post(
