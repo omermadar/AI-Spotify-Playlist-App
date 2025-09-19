@@ -90,24 +90,22 @@ class MusicRecommender:
                     if any(word in artist_name_lower for word in junk_words):
                         trust_score -= 0.3
 
-                    # 2. Robust Language Filter (Character-based)
+                    # 2. Stricter Language Filter (Character-based)
                     non_latin_chars = 0
                     if len(song_name_lower) > 0:
                         for char in song_name_lower:
-                            if ord(char) > 127: # Check for characters outside basic ASCII
+                            if ord(char) > 127:
                                 non_latin_chars += 1
-                        # Penalize if more than 25% of characters are non-latin
-                        if (non_latin_chars / len(song_name_lower)) > 0.25:
+                        # Penalize if more than 20% of characters are non-latin (more strict)
+                        if (non_latin_chars / len(song_name_lower)) > 0.20:
                             trust_score -= 0.5
 
-                    # 3. Artist Mismatch Penalty
+                    # 3. Reduced Artist Mismatch Penalty (for discovery)
                     primary_query_artist = re.findall(r"'(.*?)'", query_artists)[0] if query_artists.startswith("[") else query_artists
                     if primary_query_artist not in artist_name_lower:
-                        trust_score -= 0.2
+                        trust_score -= 0.1 # Reduced from 0.2
 
-                    # 4. Low Language Confidence Penalty
-                    if candidate_song.get('language_confidence', 1.0) <= 0.5:
-                        trust_score -= 0.2
+                    # 4. Language Confidence Penalty REMOVED
 
                     final_score = (trust_score * 0.7) + (audio_similarity * 0.3)
                 else:
