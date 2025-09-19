@@ -81,7 +81,7 @@ class PlaylistCreator:
 
         # Fallback
         print("⚠️ Could not generate seed songs from LLM, using a default fallback.")
-        return [ {{"artist": "Drake", "title": "God's Plan"}} ]
+        return [ {"artist": "Drake", "title": "God's Plan"} ]
 
 
     def filter_recommendations_with_llm(self, songs_list: List[Dict], user_request: str, seed_song: str = None) -> List[
@@ -207,14 +207,10 @@ class PlaylistCreator:
                 recs_list = recs.to_dict('records')
                 normalized_recs = self._normalize_song_fields(recs_list)
 
-                # Step 3: LLM filters each bucket (optional)
-                if use_llm_filter:
-                    print(f"🤖 LLM filtering recommendations for '{seed}'...")
-                    filtered_recs = self.filter_recommendations_with_llm(normalized_recs, user_request, seed)
-                else:
-                    print("🚫 Skipping LLM filtering.")
-                    # When not using LLM filter, sort by original similarity score
-                    filtered_recs = sorted(normalized_recs, key=lambda x: x.get('similarity_score', 0), reverse=True)
+                # Step 4: LLM filters each bucket (optional)
+                # FOR THIS TEST: LLM filtering is temporarily disabled to establish a baseline.
+                print("🚫 LLM filtering is temporarily disabled for this baseline test.")
+                filtered_recs = sorted(normalized_recs, key=lambda x: x.get('similarity_score', 0), reverse=True)
 
                 # Add seed source to each recommendation for traceability
                 for rec in filtered_recs:
