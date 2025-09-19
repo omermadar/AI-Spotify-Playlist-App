@@ -346,7 +346,7 @@ class MusicPlaylistApp:
             
         return user_input
 
-    def create_ai_playlist(self, user_request: str, playlist_size: int = 50) -> Optional[dict]:
+    def create_ai_playlist(self, user_request: str, playlist_size: int = 50, use_llm_filter: bool = True) -> Optional[dict]:
         """Create playlist using AI recommendations."""
         if not self.data_loaded:
             print("❌ Data not loaded. Run setup first.")
@@ -359,7 +359,8 @@ class MusicPlaylistApp:
             # Use your PlaylistCreator to generate recommendations
             playlist_data = self.playlist_creator.create_playlist_from_description(
                 user_request=user_request,
-                final_playlist_size=playlist_size
+                final_playlist_size=playlist_size,
+                use_llm_filter=use_llm_filter
             )
             
             return playlist_data
@@ -402,10 +403,12 @@ class MusicPlaylistApp:
         print("=" * 60)
         
         for i, song in enumerate(songs[:limit]):
-            score = song.get('score', 0)
-            print(f"  {i+1:2d}. {song['name']}")
-            print(f"      by {song['artist']}")
-            print(f"      (similarity: {score:.3f})")
+            # Display the most relevant score available
+            score = song.get('total_score', song.get('similarity_score', 0))
+            seed_source = song.get('seed_source', 'Unknown')
+            print(f"  {i+1:2d}. {song.get('name', 'Unknown Track')}")
+            print(f"      by {song.get('artist', 'Unknown Artist')}")
+            print(f"      (Score: {score:.3f} | Seed: {seed_source})")
             print()
             
         if total_songs > limit:
@@ -448,9 +451,13 @@ class MusicPlaylistApp:
                 playlist_size = max(10, min(100, playlist_size))  # Limit between 10-100
             except:
                 playlist_size = 50
+
+            # Ask whether to use LLM filter
+            use_llm_filter_input = input("\n🤖 Use LLM to filter recommendations? (y/n, default: y): ").strip().lower()
+            use_llm_filter = use_llm_filter_input not in ['n', 'no']
             
             # Create AI playlist
-            playlist_data = self.create_ai_playlist(user_request, playlist_size)
+            playlist_data = self.create_ai_playlist(user_request, playlist_size, use_llm_filter)
             if not playlist_data:
                 continue
             
@@ -496,17 +503,143 @@ class MusicPlaylistApp:
         # Load music data
         if not self.load_data():
             return
-        
-        # Setup Spotify (optional)
-        has_spotify = self.setup_spotify()
-        
-        if has_spotify:
-            print("✅ Ready to create playlists on Spotify!")
-        else:
-            print("⚠️  Spotify not connected. You can still create playlists locally.")
-        
-        # Run interactive session
-        self.interactive_session()
+
+        while True:
+            print("\n" + "="*60)
+            print("🎵 Main Menu")
+            print("="*60)
+            print("  1. Create AI Playlist")
+            print("  2. Explore Song Recommendations")
+            print("  3. Analyze Artist in Cluster")
+            print("  4. Quit")
+            choice = input("\nChoice (1-4): ").strip()
+
+            if choice == '1':
+                # Setup Spotify (optional)
+                has_spotify = self.setup_spotify()
+                if has_spotify:
+                    print("✅ Ready to create playlists on Spotify!")
+                else:
+                    print("⚠️  Spotify not connected. You can still create playlists locally.")
+                self.interactive_session()
+            elif choice == '2':
+                self.explore_recommendations_session()
+            elif choice == '3':
+                self.analyze_artist_in_cluster_session()
+            elif choice == '4':
+                break
+            else:
+                print("❌ Invalid choice. Please enter a number from 1 to 4.")
+
+        print("\n👋 Thanks for using the AI Music App!")
+
+    def analyze_artist_in_cluster_session(self):
+        """Runs a session to analyze songs by the same artist in the same cluster."""
+        print("\n" + "="*60)
+        print("ANALYZE ARTIST IN CLUSTER")
+        print("="*60)
+
+        while True:
+            query = input("\n🔍 Enter a song title to search for (or type 'back' to return): ").strip()
+            if query.lower() == 'back':
+                break
+            if len(query) < 3:
+                print("❌ Please enter at least 3 characters.")
+                continue
+
+            matches = self.recommender.search_songs(query)
+            if matches.empty:
+                print(f"No songs found matching '{query}'.")
+                continue
+
+            print(f"\nFound {len(matches)} matches. Please choose one:")
+            for i, (_, row) in enumerate(matches.head(10).iterrows()):
+                print(f"  {i + 1:2d}. {row['name']} - {row['artists']}")
+            
+            try:
+                choice_idx = int(input("\nChoice (number): ").strip()) - 1
+                if not 0 <= choice_idx < len(matches.head(10)):
+                    print("❌ Invalid choice.")
+                    continue
+                
+                chosen_song_series = matches.iloc[choice_idx]
+                seed_song = {
+                    'title': chosen_song_series['name'],
+                    'artist': chosen_song_series['artists']
+                }
+
+                print(f"\nAnalyzing cluster for other songs by the same artist as '{seed_song['title']}'...")
+                artist_cluster_songs = self.recommender.get_artist_songs_in_cluster(seed_song)
+
+                if artist_cluster_songs.empty:
+                    print("No other songs by this artist were found in the same cluster.")
+                    continue
+
+                print("\n--- Same Artist, Same Cluster Analysis ---")
+                for _, rec in artist_cluster_songs.iterrows():
+                    print(f"  - {rec['name']} (Similarity: {rec['audio_similarity']:.4f})")
+
+            except (ValueError, IndexError):
+                print("❌ Invalid input. Please enter a number from the list.")
+                continue
+
+    def explore_recommendations_session(self):
+        """Run an interactive session to explore song recommendations."""
+        print("\n" + "="*60)
+        print("EXPLORE SONG RECOMMENDATIONS")
+        print("="*60)
+
+        while True:
+            query = input("\n🔍 Enter a song title to search for (or type 'back' to return to main menu): ").strip()
+            if query.lower() == 'back':
+                break
+            if len(query) < 3:
+                print("❌ Please enter at least 3 characters to search.")
+                continue
+
+            matches = self.recommender.search_songs(query)
+            if matches.empty:
+                print(f"No songs found matching '{query}'.")
+                continue
+
+            print(f"\nFound {len(matches)} matches. Please choose one:")
+            for i, (_, row) in enumerate(matches.head(10).iterrows()):
+                print(f"  {i + 1:2d}. {row['name']} - {row['artists']}")
+            
+            try:
+                choice_idx = int(input("\nChoice (number): ").strip()) - 1
+                if not 0 <= choice_idx < len(matches.head(10)):
+                    print("❌ Invalid choice.")
+                    continue
+                
+                chosen_song_series = matches.iloc[choice_idx]
+                seed_song = {
+                    'title': chosen_song_series['name'],
+                    'artist': chosen_song_series['artists']
+                }
+
+                # Ask user whether to apply the Trust Score
+                apply_trust_score_input = input("\n🧠 Apply Trust Score filtering? (y/n, default: y): ").strip().lower()
+                use_trust_score = apply_trust_score_input not in ['n', 'no']
+
+                print(f"\nFetching recommendations for '{seed_song['title']}' (Trust Score: {use_trust_score})...")
+                recommendations = self.recommender.get_recommendations(
+                    seed_song=seed_song, 
+                    n_recommendations=10, 
+                    use_trust_score=use_trust_score
+                )
+
+                if recommendations.empty:
+                    print("Could not find any recommendations for this song.")
+                    continue
+
+                print(f"\n--- Top 10 Recommendations (Trust Score: {use_trust_score}) ---")
+                for _, rec in recommendations.iterrows():
+                    print(f"  - {rec['name']} by {rec['artists']} (Score: {rec['similarity_score']:.4f})")
+
+            except (ValueError, IndexError):
+                print("❌ Invalid input. Please enter a number from the list.")
+                continue
 
 
 def main():

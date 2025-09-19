@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.metrics.pairwise import cosine_similarity
-import os, joblib
+import os, joblib, re
 import config
 
 
@@ -36,117 +36,171 @@ class MusicRecommender:
 
         print(f"Recommender initialized with {len(self.features)} tracks and {n_clusters} clusters")
 
-    def get_recommendations(self, song_title: str, n_recommendations: int = 10):
-        """Get song recommendations based on similarity within the same cluster + language/artist filtering."""
+    def get_recommendations(self, seed_song: dict, n_recommendations: int = 10, user_request: str = "", use_trust_score: bool = True):
+        """Get song recommendations based on a seed song object containing artist and title."""
+        title = seed_song.get('title', '[Unknown Title]')
         try:
-            # Find the song in the dataset
-            song_matches = self.songs[self.songs['name'].str.contains(song_title, case=False, na=False, regex=False)]
+            artist = seed_song.get('artist', '')
 
-            if song_matches.empty:
-                print(f"Song '{song_title}' not found.")
+            if not title or not artist:
+                print(f"Seed song is missing title or artist: {seed_song}")
                 return pd.DataFrame()
 
-            # Use the first match and cast to int
-            query_idx = int(song_matches.index[0])
-            query_cluster = self.cluster_labels[query_idx]
+            # --- Artist-Qualified Seed Search ---
+            title_matches = self.songs['name'].str.contains(title, case=False, na=False, regex=False)
+            artist_matches = self.songs['artists'].str.contains(artist, case=False, na=False, regex=False)
+            song_matches = self.songs[title_matches & artist_matches]
 
-            # Get query song info for language/artist filtering
+            if song_matches.empty:
+                print(f"Song '{title}' by '{artist}' not found.")
+                return pd.DataFrame()
+            
+            query_idx = int(song_matches.index[0])
+            # --- End of Artist-Qualified Seed Search ---
+
+            query_cluster = self.cluster_labels[query_idx]
             query_song = self.songs.iloc[query_idx]
-            query_language = query_song.get('language', 'unknown')
             query_artists = str(query_song.get('artists', '')).lower()
 
-            # FIX: Use .iloc to get row at index, then .values to get numpy array
             query_features = self.features.iloc[query_idx].values.reshape(1, -1)
 
-            # Get all songs in the same cluster
             cluster_indices = np.where(self.cluster_labels == query_cluster)[0]
-            cluster_features = self.features.iloc[cluster_indices].values  # FIX: Use .iloc and .values
+            cluster_features = self.features.iloc[cluster_indices].values
 
-            # Compute cosine similarity within the cluster
             audio_similarities = cosine_similarity(query_features, cluster_features).flatten()
 
-            # FIXED: Create a composite score that stays within [0, 1] range
-            total_similarities = []
+            final_recommendations = []
 
             for i, original_idx in enumerate(cluster_indices):
                 if original_idx == query_idx:
-                    total_similarities.append(0.0)  # Skip the query song itself
                     continue
 
-                candidate_song = self.songs.iloc[original_idx]
+                candidate_song = self.songs.iloc[original_idx].copy()
+                audio_similarity = audio_similarities[i]
+                
+                if use_trust_score:
+                    trust_score = 1.0
+                    song_name_lower = str(candidate_song.get('name', '')).lower()
+                    artist_name_lower = str(candidate_song.get('artists', '')).lower()
+                    
+                    # 1. Junk Filter
+                    junk_words = ['remix', 'live', 'version', 'mix', 'workout', 'various artists', 'instrumental']
+                    if any(word in song_name_lower for word in junk_words):
+                        trust_score -= 0.3
+                    if any(word in artist_name_lower for word in junk_words):
+                        trust_score -= 0.3
 
-                # Start with the base audio similarity (0-1 range)
-                base_similarity = audio_similarities[i]
+                    # 2. Robust Language Filter (Character-based)
+                    non_latin_chars = 0
+                    if len(song_name_lower) > 0:
+                        for char in song_name_lower:
+                            if ord(char) > 127: # Check for characters outside basic ASCII
+                                non_latin_chars += 1
+                        # Penalize if more than 25% of characters are non-latin
+                        if (non_latin_chars / len(song_name_lower)) > 0.25:
+                            trust_score -= 0.5
 
-                # Calculate bonus multipliers instead of additive bonuses
-                language_multiplier = 1.0
-                artist_multiplier = 1.0
+                    # 3. Artist Mismatch Penalty
+                    primary_query_artist = re.findall(r"'(.*?)'", query_artists)[0] if query_artists.startswith("[") else query_artists
+                    if primary_query_artist not in artist_name_lower:
+                        trust_score -= 0.2
 
-                # Language bonus - prefer same language songs
-                if 'language' in candidate_song and self.language_weight > 0:
-                    candidate_language = candidate_song.get('language', 'unknown')
-                    if candidate_language == query_language and query_language != 'unknown':
-                        language_multiplier = 1.0 + self.language_weight
+                    # 4. Low Language Confidence Penalty
+                    if candidate_song.get('language_confidence', 1.0) <= 0.5:
+                        trust_score -= 0.2
 
-                # Artist similarity bonus - prefer similar artists
-                if 'artists' in candidate_song and self.artist_weight > 0:
-                    candidate_artists = str(candidate_song.get('artists', '')).lower()
-                    if candidate_artists in query_artists or query_artists in candidate_artists:
-                        artist_multiplier = 1.0 + self.artist_weight
+                    final_score = (trust_score * 0.7) + (audio_similarity * 0.3)
+                else:
+                    final_score = audio_similarity
 
-                # Combine using weighted average to keep in [0, 1] range
-                # The bonuses enhance the similarity but don't push it above 1.0
-                enhanced_similarity = base_similarity * language_multiplier * artist_multiplier
+                if final_score > 0.5:
+                    candidate_song['similarity_score'] = final_score
+                    candidate_song['audio_similarity'] = audio_similarity
+                    final_recommendations.append(candidate_song)
 
-                # Normalize to ensure we don't exceed 1.0
-                # The maximum possible multiplier is (1 + language_weight) * (1 + artist_weight)
-                max_multiplier = (1.0 + self.language_weight) * (1.0 + self.artist_weight)
-                normalized_similarity = min(1.0, enhanced_similarity / max_multiplier * 1.0)
-
-                total_similarities.append(normalized_similarity)
-
-            total_similarities = np.array(total_similarities)
-
-            # QUALITY FILTER: Only recommend songs with reasonable similarity
-            min_similarity_threshold = 0.3  # Adjust this threshold as needed
-
-            # Get top similar songs (excluding the query song itself)
-            valid_indices = []
-            query_pos_in_cluster = np.where(cluster_indices == query_idx)[0]
-
-            for i, similarity in enumerate(total_similarities):
-                original_idx = cluster_indices[i]
-                if original_idx != query_idx and similarity >= min_similarity_threshold:
-                    valid_indices.append(i)
-
-            if not valid_indices:
-                print(f"No similar songs found for '{song_title}' above similarity threshold")
+            if not final_recommendations:
+                print(f"No similar songs found for '{title}' that passed the filters.")
                 return pd.DataFrame()
 
-            # Sort by total similarity and take top N
-            sorted_indices = sorted(valid_indices, key=lambda i: total_similarities[i], reverse=True)
-            top_indices_in_cluster = sorted_indices[:n_recommendations]
+            sorted_recs = sorted(final_recommendations, key=lambda x: x['similarity_score'], reverse=True)
+            recommended_songs_df = pd.DataFrame(sorted_recs[:n_recommendations])
 
-            # Map back to original indices
-            top_indices = cluster_indices[top_indices_in_cluster]
-
-            # Get the recommended songs
-            recommended_songs = self.songs.iloc[top_indices].copy().reset_index(drop=True)
-            recommended_songs['similarity_score'] = total_similarities[top_indices_in_cluster]
-            recommended_songs['audio_similarity'] = audio_similarities[top_indices_in_cluster]
-
-            return recommended_songs.reset_index(drop=True)
+            return recommended_songs_df.reset_index(drop=True)
 
         except Exception as e:
-            print(f"Error in get_recommendations for '{song_title}': {e}")
+            print(f"Error in get_recommendations for '{title}': {e}")
             return pd.DataFrame()
 
+    def search_songs(self, query: str) -> pd.DataFrame:
+        """Search for songs in the database by name."""
+        if not query or len(query) < 2:
+            return pd.DataFrame()
+            
+        song_matches = self.songs[self.songs['name'].str.contains(query, case=False, na=False, regex=False)]
+        return song_matches[['name', 'artists']]
+
+    def get_artist_songs_in_cluster(self, seed_song: dict):
+        """Finds all songs by the same artist within the same cluster and calculates their similarity."""
+        title = seed_song.get('title', '[Unknown Title]')
+        try:
+            artist = seed_song.get('artist', '')
+            if not title or not artist:
+                return pd.DataFrame()
+
+            # Find the seed song
+            title_matches = self.songs['name'].str.contains(title, case=False, na=False, regex=False)
+            artist_matches = self.songs['artists'].str.contains(artist, case=False, na=False, regex=False)
+            song_matches = self.songs[title_matches & artist_matches]
+
+            if song_matches.empty:
+                print(f"Song '{title}' by '{artist}' not found.")
+                return pd.DataFrame()
+            
+            query_idx = int(song_matches.index[0])
+            query_song = self.songs.iloc[query_idx]
+            query_cluster = self.cluster_labels[query_idx]
+            query_features = self.features.iloc[query_idx].values.reshape(1, -1)
+
+            # Extract the primary artist
+            primary_artist = str(query_song.get('artists', ''))
+            if primary_artist.startswith("["):
+                primary_artist = re.findall(r"'(.*?)'", primary_artist)[0]
+
+            print(f"Analyzing cluster {query_cluster} for other songs by '{primary_artist}'...")
+
+            # Get all songs in the same cluster
+            cluster_indices = np.where(self.cluster_labels == query_cluster)[0]
+            
+            same_artist_songs = []
+            for i in cluster_indices:
+                if i == query_idx:
+                    continue
+                
+                row = self.songs.iloc[i]
+                if primary_artist in str(row.get('artists', '')):
+                    same_artist_songs.append(row)
+
+            if not same_artist_songs:
+                return pd.DataFrame()
+
+            same_artist_df = pd.DataFrame(same_artist_songs)
+            
+            # Calculate cosine similarity
+            other_artist_song_features = self.features.loc[same_artist_df.index].values
+            similarities = cosine_similarity(query_features, other_artist_song_features).flatten()
+            
+            same_artist_df['audio_similarity'] = similarities
+            
+            return same_artist_df[['name', 'artists', 'audio_similarity']].sort_values(by='audio_similarity', ascending=False)
+
+        except Exception as e:
+            print(f"Error in get_artist_songs_in_cluster for '{title}': {e}")
+            return pd.DataFrame()
 
     def find_similar_to_features(self, target_features: dict, n_recommendations: int = 200):
         """
         Find songs similar to given audio features using cosine similarity.
         """
-        # Create target vector from features dict
         feature_order = ['danceability', 'energy', 'valence', 'acousticness', 'instrumentalness', 'liveness',
                          'speechiness', 'tempo', 'loudness']
 
@@ -154,31 +208,36 @@ class MusicRecommender:
         for col in feature_order:
             if col in target_features:
                 value = target_features[col]
-                # Normalize tempo and loudness to 0-1 scale like other features
                 if col == 'tempo':
                     value = min(1.0, max(0.0, (value - 60) / 180))
                 elif col == 'loudness':
                     value = min(1.0, max(0.0, (value + 60) / 60))
                 target_vector.append(value)
             else:
-                target_vector.append(0.5)  # Default middle value
+                target_vector.append(0.5)
 
-        # Match the number of features in your data
         n_features = self.features.shape[1]
         while len(target_vector) < n_features:
             target_vector.append(0.5)
         target_vector = target_vector[:n_features]
-
         target_vector = np.array(target_vector).reshape(1, -1)
 
-        # Compute cosine similarity with all songs
-        similarities = cosine_similarity(target_vector, self.features.values).flatten()  # FIX: Use .values
+        similarities = cosine_similarity(target_vector, self.features.values).flatten()
 
-        # Get top similar songs
         top_indices = similarities.argsort()[-n_recommendations:][::-1]
 
-        # Return results
         results = self.songs.iloc[top_indices].copy()
+
+        for i, song in results.iterrows():
+            if 'artist' not in song or pd.isna(song['artist']):
+                if 'artists' in song and not pd.isna(song['artists']):
+                    if isinstance(song['artists'], list):
+                        results.at[i, 'artist'] = song['artists'][0] if song['artists'] else 'Unknown Artist'
+                    else:
+                        results.at[i, 'artist'] = str(song['artists'])
+                else:
+                    results.at[i, 'artist'] = 'Unknown Artist'
+
         results['similarity_score'] = similarities[top_indices]
         results['audio_similarity'] = similarities[top_indices]
         results['language_score'] = 0.0

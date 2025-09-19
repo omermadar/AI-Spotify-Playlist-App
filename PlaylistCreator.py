@@ -10,141 +10,309 @@ class PlaylistCreator:
         self.music_recommender = music_recommender
         self.ollama_base_url = ollama_base_url
 
-    def get_seed_songs_from_llm(self, user_request: str, n_seeds: int = 10) -> List[str]:
+    def call_ollama(self, prompt: str, model: str = "llama3.1:8b") -> str:
+        """Helper method to call Ollama API."""
+        try:
+            data = {
+                "model": model,
+                "prompt": prompt,
+                "stream": False
+            }
+            response = requests.post(f"{self.ollama_base_url}/api/generate", json=data, timeout=30)
+            if response.status_code == 200:
+                return response.json().get('response', '')
+            else:
+                print(f"Ollama API error: {response.status_code}")
+                return ''
+        except Exception as e:
+            print(f"Ollama connection error: {e}")
+            return ''
+
+    def get_seed_songs_from_llm(self, user_request: str, n_seeds: int = 10) -> List[Dict]:
         """
-        Use Ollama to suggest seed songs based on the user's request.
-        Returns list of song titles that we can search for.
+        Use Ollama to suggest seed songs (with artists) based on the user's request.
+        Returns a list of dictionaries, e.g., [{"artist": "Drake", "title": "God's Plan"}].
         """
         prompt = f"""
-        You are a hit-song seeding assistant for a recommender that uses cosine similarity and k-means over a large catalog of ~600k tracks.
-        
-        Task:
-        - Given a natural-language playlist request, return EXACTLY {n_seeds} distinct SONG TITLES (no artists) as a JSON array.
-        - Output must be the final, trimmed array only, no commentary.
-        - Prefer globally popular, mainstream originals that are widely available in large catalogs (avoid remixes, live/sped-up/cover versions).
-        - Prefer songs released 2000–2024 unless the request explicitly asks for earlier decades.
-        - Keep titles as they appear on Spotify (proper casing, punctuation), but do NOT include the artist name.
-        - Avoid duplicate titles or near-duplicates.
-        - If the request is ambiguous, pick one coherent, popular interpretation and stay consistent.
-        
-        Bias rules (apply when relevant):
-        - For energy/workout/gym/upbeat/party: pick high-energy hip-hop/pop bangers that are well-known and broadly popular.
-        - For sad/mellow/acoustic/chill/study: pick widely-known, slower, acoustic or mellow tracks.
-        - For decade/era/genre constraints: honor them first, then still prefer the biggest, most recognizable tracks in that slice.
-        
-        Examples (few-shot):
-        
-        Request: upbeat rap songs for workout
-        Return: ["Lose Yourself","Till I Collapse","SICKO MODE","HUMBLE.","POWER","In Da Club","Stronger","DNA.","All of the Lights","Started From The Bottom"]
-        
-        Request: sad acoustic songs
-        Return: ["Skinny Love","Hallelujah","The A Team","I Will Follow You into the Dark","Fast Car","Someone Like You","Heartbeats","The Scientist","Tears in Heaven","Photograph"]
-        
-        Now produce the seeds:
-        
-        Request: "{user_request}"
-        Return:
+        You are a hit-song seeding assistant. Your task is to generate a list of seed songs based on a user's request.
 
+        **Instructions:**
+        1.  **Output Format:** Return a single, clean JSON array of objects. Each object must have two keys: "artist" and "title".
+        2.  **Content:** The array should contain exactly {n_seeds} distinct songs.
+        3.  **Song Choice:**
+            *   Prefer globally popular, mainstream original versions.
+            *   Avoid remixes, live, or acoustic versions unless explicitly requested.
+            *   Adhere strictly to the mood and genre of the request.
+
+        **Examples:**
+
+        Request: upbeat rap songs for a workout
+        Return: [ {{"artist": "Eminem", "title": "Lose Yourself"}}, {{"artist": "Kanye West", "title": "Stronger"}} ]
+
+        Request: mellow, sad acoustic songs
+        Return: [ {{"artist": "Bon Iver", "title": "Skinny Love"}}, {{"artist": "Jeff Buckley", "title": "Hallelujah"}} ]
+
+        Now, fulfill this request:
+
+        Request: "{user_request}"
+
+        Return:
         """
 
         try:
-            response = requests.post(
-                f"{self.ollama_base_url}/api/generate",
-                json={
-                    "model": "llama3.1:8b",
-                    "prompt": prompt,
-                    "stream": False
-                }
-            )
-
-            if response.status_code == 200:
-                result = response.json()
-                llm_output = result['response'].strip()
-
-                # Extract JSON from response
-                json_match = re.search(r'\[.*\]', llm_output, re.DOTALL)
+            response = self.call_ollama(prompt)
+            if response:
+                json_match = re.search(r'\[.*?\]', response, re.DOTALL)
                 if json_match:
-                    seed_songs = json.loads(json_match.group())
-                    return seed_songs[:n_seeds]
+                    potential_json = json_match.group(0)
+                    try:
+                        seed_songs = json.loads(potential_json)
+                        # Basic validation
+                        if isinstance(seed_songs, list) and all(isinstance(s, dict) and 'artist' in s and 'title' in s for s in seed_songs):
+                            print(f"✅ Successfully parsed {len(seed_songs)} seed songs from LLM response.")
+                            return seed_songs[:n_seeds]
+                        else:
+                            print("⚠️ LLM response was not in the expected format (list of artist/title dicts).")
+                    except json.JSONDecodeError:
+                        print("⚠️ LLM response contained a JSON-like structure that failed to parse.")
+
         except Exception as e:
             print(f"Error getting seed songs from LLM: {e}")
 
-        # Fallback: default workout rap songs
-        if "rap" in user_request.lower() and ("workout" in user_request.lower() or "upbeat" in user_request.lower()):
-            return ["Lose Yourself", "Till I Collapse", "Started From The Bottom", "Stronger", "In Da Club"]
+        # Fallback
+        print("⚠️ Could not generate seed songs from LLM, using a default fallback.")
+        return [ {{"artist": "Drake", "title": "God's Plan"}} ]
 
-        # Default fallback
-        return ["Shape of You", "Blinding Lights", "Uptown Funk", "Can't Stop The Feeling", "Happy"]
 
-    def create_playlist_from_description(self, user_request: str, final_playlist_size: int = 50) -> Dict:
+    def filter_recommendations_with_llm(self, songs_list: List[Dict], user_request: str, seed_song: str = None) -> List[
+        Dict]:
         """
-        Pipeline: Text → LLM Seed Songs → Your Enhanced Cosine Similarity → Language Filter
+        Use Ollama to filter and score song recommendations based on how well they fit the original request.
         """
-        print(f"Creating playlist for: '{user_request}'")
+        if not songs_list:
+            return []
 
-        # Step 1: Get seed songs from LLM
-        print("Step 1: Getting seed songs from Ollama...")
-        seed_song_names = self.get_seed_songs_from_llm(user_request, n_seeds=10)
-        print(f"Seed songs: {seed_song_names}")
+        # Prepare song list for LLM
+        song_descriptions = []
+        for i, song in enumerate(songs_list):
+            artist = song.get('artist', song.get('artists', 'Unknown'))
+            song_descriptions.append(f"{i + 1}. {song['name']} by {artist}")
 
-        # Step 2: Determine preferred language based on request
-        preferred_language = self._detect_language_preference(user_request)
-        print(f"Detected language preference: {preferred_language}")
+        songs_text = "\\n".join(song_descriptions[:15])  # Limit to avoid token issues
 
-        # Step 3: Use your existing recommender with LANGUAGE FILTERING
-        print("Step 2: Getting recommendations from your cosine similarity system with language filtering...")
-        all_recommendations = []
+        seed_context = f" (similar to {seed_song})" if seed_song else ""
 
-        for i, seed_song_name in enumerate(seed_song_names):
-            print(f"  Getting recommendations for seed {i + 1}: {seed_song_name}")
-            try:
-                # Use the enhanced language-aware recommendation method
-                if hasattr(self.music_recommender, 'get_recommendations'):
-                    recommendations_df = self.music_recommender.get_recommendations(
-                        song_title=seed_song_name,
-                        n_recommendations=25,  # Get fewer per seed but higher quality
-                    )
+        prompt = f"""
+        You are a critical music curator. Your task is to rate a list of songs based on how well they fit a user's playlist request.
 
-                if not recommendations_df.empty:
-                    # Apply additional quality filters
-                    filtered_recommendations = self._apply_quality_filters(recommendations_df, user_request)
+        **User Request:** "{user_request}"
+        **Seed Song:** "{seed_song}"
 
-                    # Convert to list of dicts
-                    for _, row in filtered_recommendations.iterrows():
-                        song_dict = {
-                            'name': row['name'],
-                            'artists': row['artists'],
-                            'track_id': row.get('track_id', ''),
-                            'similarity_score': row.get('similarity_score', 0.0),
-                            'seed_song': seed_song_name,
-                            'language': row.get('language', 'unknown')
-                        }
-                        all_recommendations.append(song_dict)
-                    print(f"    Found {len(filtered_recommendations)} quality recommendations")
+        **Instructions:**
+        1.  **Rate each song** from 1 (bad fit) to 10 (perfect fit).
+        2.  **Be critical.** A score of 5-6 is average. A 9 or 10 should be reserved for songs that are a near-perfect match.
+        3.  **Prioritize:**
+            *   **Genre and Artist Match:** Does the song match the genre and artists in the user's request? Penalize songs that are clearly from a different genre.
+            *   **Mood Match:** Does the song's mood (e.g., mellow, energetic, sad) fit the request?
+            *   **Seed Song Similarity:** Is the song a good recommendation based on the seed song?
+        4.  **Output Format:** Respond ONLY with a clean JSON array of integer scores (e.g., [8, 6, 9, 4, 7]).
+
+        **Songs to Rate:**
+        {songs_text}
+
+        **Return (JSON array of scores only):**
+        """
+
+        try:
+            response = self.call_ollama(prompt)
+            if response and response.strip().startswith('['):
+                scores = json.loads(response.strip())
+
+                # Add LLM scores to songs
+                scored_songs = []
+                for i, song in enumerate(songs_list[:len(scores)]):
+                    song_copy = song.copy()
+                    song_copy['llm_score'] = scores[i] if i < len(scores) else 5
+                    # Combine with similarity score
+                    similarity = song.get('similarity_score', 0.5)
+                    song_copy['total_score'] = (similarity * 0.6) + (scores[i] / 10.0 * 0.4)
+                    scored_songs.append(song_copy)
+
+                # Sort by combined score
+                return sorted(scored_songs, key=lambda x: x['total_score'], reverse=True)
+
+        except Exception as e:
+            print(f"⚠️  LLM filtering failed: {e}")
+
+        # Fallback: return original list with similarity scores
+        return songs_list
+
+    def _normalize_song_fields(self, songs_list: List[Dict]) -> List[Dict]:
+        """Normalize song field names to ensure consistency."""
+        normalized = []
+
+        for song in songs_list:
+            normalized_song = song.copy()
+
+            # Ensure 'artist' field exists
+            if 'artist' not in normalized_song and 'artists' in normalized_song:
+                artists = normalized_song['artists']
+                if isinstance(artists, list):
+                    normalized_song['artist'] = artists[0] if artists else 'Unknown'
                 else:
-                    print(f"    No recommendations found for {seed_song_name}")
-            except Exception as e:
-                print(f"    Error getting recommendations for {seed_song_name}: {e}")
+                    normalized_song['artist'] = str(artists)
+            elif 'artist' not in normalized_song:
+                normalized_song['artist'] = 'Unknown'
 
-        print(f"Total recommendations collected: {len(all_recommendations)}")
+            # Ensure required fields exist
+            normalized_song.setdefault('name', 'Unknown Track')
+            normalized_song.setdefault('similarity_score', 0.0)
 
-        # Step 4: IMPROVED duplicate removal
-        unique_recommendations = self._remove_duplicates_improved(all_recommendations)
-        print(f"After removing duplicates: {len(unique_recommendations)}")
+            normalized.append(normalized_song)
 
-        # Step 5: Final quality scoring and ranking (FIXED to stay in [0, 1] range)
-        scored_recommendations = self._score_recommendations_fixed(unique_recommendations, user_request,
-                                                                   preferred_language)
+        return normalized
 
-        # Step 6: Sort by total score and take top candidates
-        final_songs = sorted(scored_recommendations, key=lambda x: x.get('total_score', x['similarity_score']),
-                             reverse=True)[:final_playlist_size]
-        print(f"Final playlist size: {len(final_songs)}")
+    def create_playlist_from_description_enhanced(self, user_request: str, final_playlist_size: int = 50, use_llm_filter: bool = True):
+        """
+        Enhanced playlist creation with LLM filtering, seed-based diversity, and smart fallbacks.
+        """
 
-        # Step 7: Format for output
-        playlist_data = self.create_playlist_data(final_songs, user_request)
+        try:
+            print(f"🎤 Creating playlist for: '{user_request}' (LLM Filter: {use_llm_filter})")
 
-        return playlist_data
+            # Step 1: Get seed songs from LLM
+            print("🌱 Getting seed songs...")
+            seed_songs = self.get_seed_songs_from_llm(user_request, n_seeds=10)
+
+            if not seed_songs:
+                print("❌ No seed songs generated")
+                return None
+
+            print(f"✅ Generated {len(seed_songs)} seed songs")
+
+            # Step 2: Collect recommendations from all seeds
+            all_buckets = []
+            for seed in seed_songs:
+                seed_title = seed.get('title', '[Unknown Title]')
+                print(f"🔍 Getting recommendations for seed: {seed_title} by {seed.get('artist', '[Unknown Artist]')}")
+
+                # Get similarity-based recommendations (passing the whole seed object)
+                recs = self.music_recommender.get_recommendations(seed, n_recommendations=75, user_request=user_request)
+
+                if recs.empty:
+                    print(f"❌ No recommendations found for '{seed}' - skipping")
+                    continue
+
+                # Convert to list of dicts and normalize field names
+                recs_list = recs.to_dict('records')
+                normalized_recs = self._normalize_song_fields(recs_list)
+
+                # Step 3: LLM filters each bucket (optional)
+                if use_llm_filter:
+                    print(f"🤖 LLM filtering recommendations for '{seed}'...")
+                    filtered_recs = self.filter_recommendations_with_llm(normalized_recs, user_request, seed)
+                else:
+                    print("🚫 Skipping LLM filtering.")
+                    # When not using LLM filter, sort by original similarity score
+                    filtered_recs = sorted(normalized_recs, key=lambda x: x.get('similarity_score', 0), reverse=True)
+
+                # Add seed source to each recommendation for traceability
+                for rec in filtered_recs:
+                    rec['seed_source'] = seed
+
+                # Take all good recommendations from the seed
+                if filtered_recs:
+                    all_buckets.append(filtered_recs)
+                    print(f"✅ Selected {len(filtered_recs)} songs from '{seed}'")
+                else:
+                    print(f"⚠️  No songs passed filter for '{seed}'")
+
+            if not all_buckets:
+                print("❌ No recommendations from any seed songs")
+                return None
+
+            # --- New Assembly Logic: Best of the Best ---
+            print("🎯 Assembling final playlist from the best songs across all seeds...")
+
+            # 1. Flatten all buckets into a single list
+            all_recommendations = [song for bucket in all_buckets for song in bucket]
+
+            # 2. Determine the sorting key
+            if use_llm_filter:
+                sort_key = lambda x: x.get('total_score', 0)
+            else:
+                sort_key = lambda x: x.get('similarity_score', 0)
+            
+            all_recommendations.sort(key=sort_key, reverse=True)
+
+            # 3. Build the final playlist with de-duplication
+            final_songs = []
+            seen_tracks = set()
+            for song in all_recommendations:
+                if len(final_songs) >= final_playlist_size:
+                    break
+                
+                track_key = (song.get('name', ''), song.get('artist', ''))
+                if track_key not in seen_tracks:
+                    final_songs.append(song)
+                    seen_tracks.add(track_key)
+
+            # Step 5: Fill remaining slots (This is now a fallback, as the new logic should usually hit the target)
+            if len(final_songs) < final_playlist_size:
+                print(f"  [Fill] Playlist is still short. Running fallback fill...")
+
+                # Collect all remaining songs
+                all_remaining = []
+                for bucket in all_buckets:
+                    all_remaining.extend(bucket)
+
+                # Remove duplicates and sort by score
+                remaining_unique = []
+                for song in all_remaining:
+                    track_key = (song['name'], song.get('artist', ''))
+                    if track_key not in seen_tracks:
+                        remaining_unique.append(song)
+
+                # Adjust sorting key based on whether LLM filter was used
+                if use_llm_filter:
+                    sort_key = lambda x: (x.get('total_score', 0), x.get('similarity_score', 0))
+                else:
+                    sort_key = lambda x: x.get('similarity_score', 0)
+                
+                remaining_sorted = sorted(remaining_unique, key=sort_key, reverse=True)
+
+                # Add remaining songs
+                for song in remaining_sorted:
+                    if len(final_songs) >= final_playlist_size:
+                        break
+                    final_songs.append(song)
+
+            # Step 6: Format output
+            playlist_name = f"{user_request.title()} - AI Generated"
+            description = f"AI-curated playlist for: {user_request}"
+
+            result = {
+                'name': playlist_name,
+                'description': description,
+                'songs': final_songs[:final_playlist_size],
+                'total_songs': len(final_songs),
+                'seed_songs': seed_songs,
+                'successful_seeds': len(all_buckets)
+            }
+
+            print(f"🎉 Created playlist with {len(final_songs)} songs from {len(all_buckets)} seeds!")
+            return result
+
+        except Exception as e:
+            print(f"❌ Error creating playlist: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    # Keep the original method name for backward compatibility
+    def create_playlist_from_description(self, user_request: str, final_playlist_size: int = 50, use_llm_filter: bool = True):
+        """Backward compatibility wrapper for the enhanced method."""
+        return self.create_playlist_from_description_enhanced(user_request, final_playlist_size, use_llm_filter)
 
     def _detect_language_preference(self, user_request: str) -> str:
         """Detect the preferred language from user request."""
@@ -152,20 +320,22 @@ class PlaylistCreator:
 
         # Check for explicit language mentions
         if any(word in request_lower for word in ['english', 'american', 'british']):
-            return 'en'
+            return 'English'
         elif any(word in request_lower for word in ['spanish', 'latino', 'reggaeton']):
-            return 'es'
+            return 'Spanish'
         elif any(word in request_lower for word in ['french', 'francais']):
-            return 'fr'
+            return 'French'
         elif any(word in request_lower for word in ['german', 'deutsch']):
-            return 'de'
+            return 'German'
+        elif any(word in request_lower for word in ['hebrew']):
+            return 'Hebrew'
 
         # Default to English for most Western music genres
         western_genres = ['pop', 'rap', 'hip-hop', 'rock', 'country', 'r&b', 'soul', 'funk', 'disco', 'house', 'edm']
         if any(genre in request_lower for genre in western_genres):
-            return 'en'
+            return 'English'
 
-        return 'en'  # Default to English
+        return 'English'  # Default to English
 
     def _apply_quality_filters(self, recommendations_df: pd.DataFrame, user_request: str) -> pd.DataFrame:
         """Apply additional quality filters to remove obviously bad matches."""
@@ -174,146 +344,28 @@ class PlaylistCreator:
         # Filter 1: Remove songs with very low similarity scores
         filtered = filtered[filtered.get('similarity_score', 0) >= 0.3]
 
-        # Filter 2: For rap/hip-hop requests, try to filter out non-rap genres by artist names
+        # Filter 2: For workout requests, prefer higher energy songs
         request_lower = user_request.lower()
-        if 'rap' in request_lower or 'hip-hop' in request_lower or 'hip hop' in request_lower:
-            # This is a simple heuristic - you could make this more sophisticated
-            pass  # Keep all for now, let the similarity scores handle it
-
-        # Filter 3: For workout requests, prefer higher energy songs
         if 'workout' in request_lower or 'gym' in request_lower or 'exercise' in request_lower:
             # Prefer songs with higher similarity scores (which should correlate with energy)
             filtered = filtered[filtered.get('similarity_score', 0) >= 0.4]
 
         return filtered
 
-    def _score_recommendations_fixed(self, recommendations: List[Dict], user_request: str, preferred_language: str) -> \
-    List[Dict]:
-        """
-        FIXED: Enhanced scoring system that keeps scores normalized between 0.0 and 1.0.
-        """
-        for rec in recommendations:
-            base_score = rec['similarity_score']
+    def save_playlist_locally(self, playlist_data: dict, filename: str = None):
+        """Save playlist data to a local file."""
+        if not filename:
+            # Generate filename from playlist name
+            safe_name = "".join(c for c in playlist_data['name'] if c.isalnum() or c in (' ', '-', '_')).rstrip()
+            filename = f"{safe_name.replace(' ', '_')}.json"
 
-            # Ensure base score is between 0 and 1
-            base_score = max(0.0, min(1.0, base_score))
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(playlist_data, f, indent=2, ensure_ascii=False)
 
-            # Use multiplicative bonuses that preserve the [0, 1] range
-            language_bonus = 0.0
-            if rec.get('language') == preferred_language:
-                language_bonus = 0.05  # Small boost for preferred language
-            elif rec.get('language') == 'unknown':  # Unknown language gets smaller bonus
-                language_bonus = 0.02
+            print(f"💾 Playlist saved locally as: {filename}")
+            return True
 
-            # Genre relevance bonus (simple keyword matching)
-            genre_bonus = 0.0
-            request_lower = user_request.lower()
-            artist_name = str(rec.get('artists', '')).lower()
-
-            # Rap/Hip-hop artist recognition
-            if 'rap' in request_lower and any(artist in artist_name for artist in
-                                              ['eminem', 'drake', 'kanye', 'jay-z', 'kendrick', 'cole', 'future',
-                                               'travis', 'lil', 'young', '50 cent']):
-                genre_bonus = 0.05  # Small boost for recognized rap artists
-
-            # Calculate total score using weighted average to keep in [0, 1]
-            # Weight the base score more heavily than bonuses
-            total_score = (base_score * 0.85) + (language_bonus * 0.10) + (genre_bonus * 0.05)
-
-            # Final normalization to ensure [0, 1] range
-            total_score = max(0.0, min(1.0, total_score))
-
-            rec['total_score'] = total_score
-            rec['language_bonus'] = language_bonus
-            rec['genre_bonus'] = genre_bonus
-
-        return recommendations
-
-    def _remove_duplicates_improved(self, recommendations: List[Dict]) -> List[Dict]:
-        """Improved duplicate removal using multiple methods."""
-        seen = {}
-
-        for rec in recommendations:
-            # Clean song name for better matching
-            clean_name = self._clean_song_name(rec['name'])
-            clean_artist = self._clean_artist_name(rec['artists'])
-
-            # Create multiple keys to catch different duplicate patterns
-            keys = [
-                f"{clean_name}_{clean_artist}",  # Main key
-                clean_name,  # Just song name (catches different versions)
-            ]
-
-            # Check all keys for duplicates
-            is_duplicate = False
-            best_key = keys[0]
-
-            for key in keys:
-                if key in seen:
-                    # Found duplicate - keep the one with higher score
-                    current_score = rec.get('total_score', rec['similarity_score'])
-                    existing_score = seen[key].get('total_score', seen[key]['similarity_score'])
-
-                    if current_score > existing_score:
-                        # This version is better, remove the old one and use this
-                        seen[key] = rec
-                    is_duplicate = True
-                    best_key = key
-                    break
-
-            if not is_duplicate:
-                seen[best_key] = rec
-
-        return list(seen.values())
-
-    def _clean_song_name(self, name: str) -> str:
-        """Clean song name to catch more duplicates."""
-        if not isinstance(name, str):
-            return str(name).lower()
-
-        # Remove common additions that create duplicates
-        name = name.lower()
-
-        # Remove version indicators
-        patterns = [
-            r'\s*-\s*soundtrack version.*$',
-            r'\s*-\s*from.*soundtrack.*$',
-            r'\s*-\s*radio edit.*$',
-            r'\s*-\s*album version.*$',
-            r'\s*-\s*edited.*$',
-            r'\s*\(.*version.*\).*$',
-            r'\s*\(.*edit.*\).*$',
-            r'\s*\(.*soundtrack.*\).*$',
-            r'\s*\(remaster.*\).*$',
-            r'\s*\(feat\..*\).*$',
-            r'\s*feat\..*$',
-        ]
-
-        for pattern in patterns:
-            name = re.sub(pattern, '', name, flags=re.IGNORECASE)
-
-        return name.strip()
-
-    def _clean_artist_name(self, artists) -> str:
-        """Clean artist name for better matching."""
-        if not isinstance(artists, str):
-            artists = str(artists)
-        return artists.lower().strip()
-
-    def create_playlist_data(self, songs: List[Dict], user_request: str) -> Dict:
-        """Format for output."""
-        playlist_name = f"AI Playlist: {user_request[:30]}..."
-
-        track_uris = []
-        for song in songs:
-            if 'track_id' in song and song['track_id']:
-                track_uris.append(f"spotify:track:{song['track_id']}")
-
-        return {
-            "name": playlist_name,
-            "description": f"AI-generated playlist for: {user_request}",
-            "track_uris": track_uris,
-            "track_count": len(songs),
-            "songs": [{"name": s['name'], "artist": s['artists'],
-                       "score": round(s.get('total_score', s['similarity_score']), 3)} for s in songs]
-        }
+        except Exception as e:
+            print(f"❌ Error saving playlist: {e}")
+            return False
