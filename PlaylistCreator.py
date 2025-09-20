@@ -43,6 +43,7 @@ class PlaylistCreator:
             *   Prefer globally popular, mainstream original versions.
             *   Avoid remixes, live, or acoustic versions unless explicitly requested.
             *   Adhere strictly to the mood and genre of the request.
+            *   Avoid songs released after 2020.
 
         **Examples:**
 
