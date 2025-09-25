@@ -7,3 +7,7 @@ models/
 data/
 .idea/
 .DS_Store
+.spotify_cache
+__pycache__/
+Rap_Workout_-_AI_Generated-NO-LLM.json
+Rap_Workout_-_AI_Generated-YES-LLM.json

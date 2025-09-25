@@ -1,6 +1,7 @@
 import json
 import requests
 import re
+import random
 from typing import List, Dict
 import pandas as pd
 
@@ -43,7 +44,6 @@ class PlaylistCreator:
             *   Prefer globally popular, mainstream original versions.
             *   Avoid remixes, live, or acoustic versions unless explicitly requested.
             *   Adhere strictly to the mood and genre of the request.
-            *   Avoid songs released after 2020.
 
         **Examples:**
 
@@ -63,7 +63,7 @@ class PlaylistCreator:
         try:
             response = self.call_ollama(prompt)
             if response:
-                json_match = re.search(r'\[.*?\]', response, re.DOTALL)
+                json_match = re.search(r'[[.*?]]', response, re.DOTALL)
                 if json_match:
                     potential_json = json_match.group(0)
                     try:
@@ -99,48 +99,41 @@ class PlaylistCreator:
             artist = song.get('artist', song.get('artists', 'Unknown'))
             song_descriptions.append(f"{i + 1}. {song['name']} by {artist}")
 
-        songs_text = "\\n".join(song_descriptions[:15])  # Limit to avoid token issues
+        songs_text = "\n".join(song_descriptions[:15])  # Limit to avoid token issues
 
         seed_context = f" (similar to {seed_song})" if seed_song else ""
 
         prompt = f"""
-        You are a critical music curator. Your task is to rate a list of songs based on how well they fit a user's playlist request.
+        You are a precise music filter. Your task is to identify which songs from the following list are a good fit for the user's request.
 
         **User Request:** "{user_request}"
         **Seed Song:** "{seed_song}"
 
         **Instructions:**
-        1.  **Rate each song** from 1 (bad fit) to 10 (perfect fit).
-        2.  **Be critical.** A score of 5-6 is average. A 9 or 10 should be reserved for songs that are a near-perfect match.
-        3.  **Prioritize:**
-            *   **Genre and Artist Match:** Does the song match the genre and artists in the user's request? Penalize songs that are clearly from a different genre.
-            *   **Mood Match:** Does the song's mood (e.g., mellow, energetic, sad) fit the request?
-            *   **Seed Song Similarity:** Is the song a good recommendation based on the seed song?
-        4.  **Output Format:** Respond ONLY with a clean JSON array of integer scores (e.g., [8, 6, 9, 4, 7]).
+        1.  **Analyze the List:** Carefully review the songs provided.
+        2.  **Identify Good Fits:** Determine which songs strictly match the user's request in terms of genre, mood, and artists.
+        3.  **Output Format:** Respond ONLY with a clean JSON array of the INDEX numbers of the songs that are a good fit (e.g., [1, 3, 4, 7]). The indices must correspond to the song numbers in the list.
 
-        **Songs to Rate:**
+        **Songs to Filter:**
         {songs_text}
 
-        **Return (JSON array of scores only):**
+        **Return (JSON array of indices only):**
         """
 
         try:
             response = self.call_ollama(prompt)
             if response and response.strip().startswith('['):
-                scores = json.loads(response.strip())
+                good_indices = json.loads(response.strip())
+                
+                # Filter the songs based on the indices returned by the LLM
+                filtered_songs = [songs_list[i - 1] for i in good_indices if 0 < i <= len(songs_list)]
+                
+                # Add a score to the filtered songs to preserve sorting
+                for song in filtered_songs:
+                    song['llm_score'] = 1 # Mark as approved by LLM
+                    song['total_score'] = song.get('similarity_score', 0)
 
-                # Add LLM scores to songs
-                scored_songs = []
-                for i, song in enumerate(songs_list[:len(scores)]):
-                    song_copy = song.copy()
-                    song_copy['llm_score'] = scores[i] if i < len(scores) else 5
-                    # Combine with similarity score
-                    similarity = song.get('similarity_score', 0.5)
-                    song_copy['total_score'] = (similarity * 0.6) + (scores[i] / 10.0 * 0.4)
-                    scored_songs.append(song_copy)
-
-                # Sort by combined score
-                return sorted(scored_songs, key=lambda x: x['total_score'], reverse=True)
+                return sorted(filtered_songs, key=lambda x: x['total_score'], reverse=True)
 
         except Exception as e:
             print(f"⚠️  LLM filtering failed: {e}")
@@ -172,6 +165,16 @@ class PlaylistCreator:
             normalized.append(normalized_song)
 
         return normalized
+
+    def _get_track_key(self, song: Dict) -> tuple:
+        """Generate a normalized key for a song to detect duplicates (e.g., remixes, live versions)."""
+        name = song.get('name', '').lower()
+        artist = song.get('artist', '').lower()
+
+        # Remove common variations from the title
+        name = re.sub(r'\(.*?remix.*?\)|\(.*?live.*?\)|\(.*?acoustic.*?\)', '', name).strip()
+
+        return name, artist
 
     def create_playlist_from_description_enhanced(self, user_request: str, final_playlist_size: int = 50, use_llm_filter: bool = True):
         """
@@ -209,81 +212,69 @@ class PlaylistCreator:
                 normalized_recs = self._normalize_song_fields(recs_list)
 
                 # Step 4: LLM filters each bucket (optional)
-                # FOR THIS TEST: LLM filtering is temporarily disabled to establish a baseline.
-                print("🚫 LLM filtering is temporarily disabled for this baseline test.")
-                filtered_recs = sorted(normalized_recs, key=lambda x: x.get('similarity_score', 0), reverse=True)
+                if use_llm_filter:
+                    print(f"🧠 Applying LLM filter for seed: {seed_title}...")
+                    # Pass the seed song's title for better context
+                    filtered_recs = self.filter_recommendations_with_llm(normalized_recs, user_request,
+                                                                         seed_song=seed_title)
+                else:
+                    # Fallback to sorting by similarity score if LLM filter is off
+                    filtered_recs = sorted(normalized_recs, key=lambda x: x.get('similarity_score', 0), reverse=True)
 
                 # Add seed source to each recommendation for traceability
                 for rec in filtered_recs:
                     rec['seed_source'] = seed
 
-                # Take all good recommendations from the seed
                 if filtered_recs:
                     all_buckets.append(filtered_recs)
-                    print(f"✅ Selected {len(filtered_recs)} songs from '{seed}'")
+                    print(f"✅ Selected {len(filtered_recs)} songs from '{seed_title}'")
                 else:
-                    print(f"⚠️  No songs passed filter for '{seed}'")
+                    print(f"⚠️ No songs passed filter for '{seed_title}'")
 
             if not all_buckets:
                 print("❌ No recommendations from any seed songs")
                 return None
 
-            # --- New Assembly Logic: Best of the Best ---
-            print("🎯 Assembling final playlist from the best songs across all seeds...")
+            # --- New Assembly Logic: Core + Spice ---
+            print("🎯 Assembling final playlist with 'Core + Spice' strategy...")
 
-            # 1. Flatten all buckets into a single list
+            # 1. Flatten all buckets and sort by the appropriate score
             all_recommendations = [song for bucket in all_buckets for song in bucket]
-
-            # 2. Determine the sorting key
-            if use_llm_filter:
-                sort_key = lambda x: x.get('total_score', 0)
-            else:
-                sort_key = lambda x: x.get('similarity_score', 0)
-            
+            sort_key = lambda x: x.get('total_score', x.get('similarity_score', 0))
             all_recommendations.sort(key=sort_key, reverse=True)
 
-            # 3. Build the final playlist with de-duplication
-            final_songs = []
-            seen_tracks = set()
+            # 2. Smart de-duplication
+            unique_songs = []
+            seen_keys = set()
             for song in all_recommendations:
-                if len(final_songs) >= final_playlist_size:
-                    break
-                
-                track_key = (song.get('name', ''), song.get('artist', ''))
-                if track_key not in seen_tracks:
-                    final_songs.append(song)
-                    seen_tracks.add(track_key)
+                key = self._get_track_key(song)
+                if key not in seen_keys:
+                    unique_songs.append(song)
+                    seen_keys.add(key)
 
-            # Step 5: Fill remaining slots (This is now a fallback, as the new logic should usually hit the target)
+            # 3. "Core + Spice" selection
+            final_songs = []
+            core_playlist_size = final_playlist_size - 10  # e.g., 40 songs
+            spice_songs_to_add = 10
+
+            # Add the "core" songs (top N)
+            final_songs.extend(unique_songs[:core_playlist_size])
+
+            # Add "spice" songs from the next part of the list
+            spice_candidates = unique_songs[core_playlist_size:core_playlist_size + 50]  # Look at the next 50
+            if spice_candidates:
+                # Shuffle to get random spice songs
+                random.shuffle(spice_candidates)
+                final_songs.extend(spice_candidates[:spice_songs_to_add])
+
+            # 4. Fill if still short (fallback)
             if len(final_songs) < final_playlist_size:
-                print(f"  [Fill] Playlist is still short. Running fallback fill...")
-
-                # Collect all remaining songs
-                all_remaining = []
-                for bucket in all_buckets:
-                    all_remaining.extend(bucket)
-
-                # Remove duplicates and sort by score
-                remaining_unique = []
-                for song in all_remaining:
-                    track_key = (song['name'], song.get('artist', ''))
-                    if track_key not in seen_tracks:
-                        remaining_unique.append(song)
-
-                # Adjust sorting key based on whether LLM filter was used
-                if use_llm_filter:
-                    sort_key = lambda x: (x.get('total_score', 0), x.get('similarity_score', 0))
-                else:
-                    sort_key = lambda x: x.get('similarity_score', 0)
-                
-                remaining_sorted = sorted(remaining_unique, key=sort_key, reverse=True)
-
-                # Add remaining songs
-                for song in remaining_sorted:
-                    if len(final_songs) >= final_playlist_size:
-                        break
-                    final_songs.append(song)
-
+                print(f"  [Fill] Playlist is short. Adding more songs from the top.")
+                remaining_needed = final_playlist_size - len(final_songs)
+                # Correctly reference unique_songs
+                start_index = core_playlist_size + len(spice_candidates)
+                additional_songs = unique_songs[start_index:]
+                final_songs.extend(additional_songs[:remaining_needed])
             # Step 6: Format output
             playlist_name = f"{user_request.title()} - AI Generated"
             description = f"AI-curated playlist for: {user_request}"
